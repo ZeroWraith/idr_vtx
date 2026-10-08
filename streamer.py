@@ -77,95 +77,104 @@ def get_device_formats(device):
     # Simple parse: we just need to know if desired resolution exists.
     return out
 
-def find_supported_format(device, width, height, fps, preferred=('NV12','YUYV','UYVY')):
-    """Return a format string from preferred that device supports at given resolution/fps."""
+def get_device_modes(device):
+    """Return list of (width, height, fps, fmt) supported by device."""
     try:
         out = subprocess.check_output(['v4l2-ctl', '-d', device, '--list-formats-ext'], text=True)
     except subprocess.CalledProcessError:
-        return None
+        return []
+    modes = []
     lines = out.splitlines()
     current_fmt = None
-    in_size = False
-    size_match = False
+    current_size = None
     for line in lines:
         stripped = line.strip()
         if stripped.startswith('[') and ']:' in stripped:
-            # format line, e.g. [0]: 'YUYV' (YUYV 4:2:2)
             parts = stripped.split("'")
             if len(parts) >= 2:
                 current_fmt = parts[1]
-            in_size = False
-            size_match = False
+            current_size = None
         elif stripped.startswith('Size:') and current_fmt:
-            # Size: Discrete 1280x720
-            if f'{width}x{height}' in stripped:
-                size_match = True
-                in_size = True
-            else:
-                size_match = False
-                in_size = False
-        elif stripped.startswith('Interval:') and size_match and current_fmt:
-            # Interval: Discrete 0.033s (30.000 fps)
-            # compute fps from interval
-            try:
-                # find number in parentheses
-                import re
-                m = re.search(r'\(([\d.]+)\s*fps\)', stripped)
-                if m:
-                    interval_fps = float(m.group(1))
-                    if abs(interval_fps - fps) < 0.5:
-                        if current_fmt in preferred:
-                            return current_fmt
-            except Exception:
-                pass
-    return None
+            # e.g. Size: Discrete 1280x720
+            import re
+            m = re.search(r'(\d+)x(\d+)', stripped)
+            if m:
+                w, h = int(m.group(1)), int(m.group(2))
+                current_size = (w, h)
+        elif stripped.startswith('Interval:') and current_fmt and current_size:
+            # e.g. Interval: Discrete 0.033s (30.000 fps)
+            import re
+            m = re.search(r'\(([\d.]+)\s*fps\)', stripped)
+            if m:
+                fps = float(m.group(1))
+                w, h = current_size
+                modes.append((w, h, fps, current_fmt))
+    return modes
 
 
 def pick_capture_device(cfg):
     """Select capture device per config or auto-detect first suitable.
-    Returns (device_path, format_string) or (None, None)."""
+    Returns (device_path, width, height, fps, format_string) or (None, None, None, None, None)."""
     desired = cfg['capture'].get('device')
     cap = cfg['capture']
-    width = cap['width']
-    height = cap['height']
-    fps = cap['framerate']
-    preferred = cap.get('preferred_formats', ['NV12','YUYV','UYVY'])
+    target_w = cap['width']
+    target_h = cap['height']
+    target_fps = cap['framerate']
+    preferred_formats = cap.get('preferred_formats', ['NV12','YUYV','UYVY'])
+    
+    def choose_mode(modes):
+        # First try exact match
+        for w,h,fps,fmt in modes:
+            if w == target_w and h == target_h and abs(fps - target_fps) < 0.5 and fmt in preferred_formats:
+                return w,h,fps,fmt
+        # Then same resolution, any fps
+        for w,h,fps,fmt in modes:
+            if w == target_w and h == target_h and fmt in preferred_formats:
+                return w,h,fps,fmt
+        # Then any preferred format
+        for w,h,fps,fmt in modes:
+            if fmt in preferred_formats:
+                return w,h,fps,fmt
+        # Fallback first mode
+        if modes:
+            return modes[0]
+        return None
+    
     if desired:
         if os.path.exists(desired):
-            fmt = find_supported_format(desired, width, height, fps, preferred)
-            if fmt:
-                log.info(f'Using configured device: {desired} with format {fmt}')
-                return desired, fmt
+            modes = get_device_modes(desired)
+            choice = choose_mode(modes)
+            if choice:
+                w,h,fps,fmt = choice
+                log.info(f'Using configured device: {desired} with {w}x{h}@{fps}fps {fmt}')
+                return desired, w, h, fps, fmt
             else:
-                log.error(f'Configured device {desired} does not support {width}x{height}@{fps}fps with preferred formats')
-                return None, None
+                log.error(f'Configured device {desired} has no suitable mode')
+                return None, None, None, None, None
         else:
             log.warning(f'Configured device {desired} not found, falling back to auto-detect')
     devices = list_video_devices()
     if not devices:
         log.error('No video capture devices found')
-        return None, None
+        return None, None, None, None, None
     for dev, name in devices:
         log.info(f'Found capture device: {dev} ({name})')
-        fmt = find_supported_format(dev, width, height, fps, preferred)
-        if fmt:
-            log.info(f'Selected device {dev} with format {fmt}')
-            return dev, fmt
+        modes = get_device_modes(dev)
+        choice = choose_mode(modes)
+        if choice:
+            w,h,fps,fmt = choice
+            log.info(f'Selected device {dev} with {w}x{h}@{fps}fps {fmt}')
+            return dev, w, h, fps, fmt
         else:
-            log.warning(f'Device {dev} does not support required mode')
-    return None, None
+            log.warning(f'Device {dev} does not have usable modes')
+    return None, None, None, None, None
 
 # ----------------------------------------------------------------------
 # GStreamer pipeline construction
 # ----------------------------------------------------------------------
-def build_pipeline(cfg, device, fmt):
-    cap = cfg['capture']
+def build_pipeline(cfg, device, width, height, fps, fmt):
     enc = cfg['encoder']
     rtmp = cfg['rtmp']
-
-    width = cap['width']
-    height = cap['height']
-    fps = cap['framerate']
 
     bitrate = enc['bitrate']
     profile_map = {'baseline': 1, 'main': 2, 'high': 4}
@@ -173,13 +182,16 @@ def build_pipeline(cfg, device, fmt):
     level_map = {'3.1': 13, '4.0': 20, '4.1': 21}
     level = level_map.get(str(enc.get('level', '3.1')), 13)
     gop = enc.get('gop_size', fps)
-    io_mode = enc.get('io_mode', 'dmabuf-import')
+    io_mode = enc.get('io_mode', '')
 
     rtmp_url = f"rtmp://{rtmp['host']}:{rtmp['port']}/{rtmp['app']}/{rtmp['stream_key']}"
 
+    src = f"v4l2src device={device}"
+    if io_mode:
+        src += f" io-mode={io_mode}"
     pipeline_str = (
-        f"v4l2src device={device} io-mode={io_mode} ! "
-        f"video/x-raw,width={width},height={height},framerate={fps}/1,format={fmt} ! "
+        f"{src} ! "
+        f"video/x-raw,width={width},height={height},framerate={int(fps)}/1,format={fmt} ! "
         f"videoconvert ! "
         f"x264enc tune=zerolatency bitrate={bitrate//1000} speed-preset=veryfast key-int-max={gop} ! "
         f"h264parse config-interval=1 ! "
@@ -208,14 +220,14 @@ class Streamer:
 
     def _setup_device(self):
         while self.running:
-            self.device, self.fmt = pick_capture_device(self.cfg)
+            self.device, self.width, self.height, self.fps, self.fmt = pick_capture_device(self.cfg)
             if self.device:
                 break
             log.warning('No capture device found, retrying in 5s...')
             time.sleep(5)
 
     def _build_and_run_pipeline(self):
-        pipe_str = build_pipeline(self.cfg, self.device, self.fmt)
+        pipe_str = build_pipeline(self.cfg, self.device, self.width, self.height, self.fps, self.fmt)
         self.pipeline = Gst.parse_launch(pipe_str)
         bus = self.pipeline.get_bus()
         bus.add_signal_watch()
