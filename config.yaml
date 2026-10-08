@@ -33,3 +33,10 @@ encoder:
 streamer:
   reconnect_delay: 5        # seconds between reconnection attempts
   log_level: "INFO"         # DEBUG, INFO, WARNING, ERROR
+
+# UDP streaming (direct to VLC, no MediaMTX needed)
+udp:
+  host: "192.168.1.100"     # PC IP running VLC
+  port: 5000                # UDP port (VLC: udp://@:5000)
+  # Encoder: "hardware" (v4l2h264enc) or "software" (x264enc)
+  encoder: "hardware"
