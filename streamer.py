@@ -120,7 +120,7 @@ def pick_capture_device(cfg):
     target_w = cap['width']
     target_h = cap['height']
     target_fps = cap['framerate']
-    preferred_formats = cap.get('preferred_formats', ['NV12','YUYV','UYVY'])
+    preferred_formats = cap.get('preferred_formats', ['MJPG','NV12','YUYV','UYVY'])
     
     def choose_mode(modes):
         # First try exact match
@@ -189,15 +189,28 @@ def build_pipeline(cfg, device, width, height, fps, fmt):
     src = f"v4l2src device={device}"
     if io_mode:
         src += f" io-mode={io_mode}"
-    pipeline_str = (
-        f"{src} ! "
-        f"video/x-raw,width={width},height={height},framerate={int(fps)}/1,format={fmt} ! "
-        f"videoconvert ! "
-        f"x264enc tune=zerolatency bitrate={bitrate//1000} speed-preset=veryfast key-int-max={gop} ! "
-        f"h264parse config-interval=1 ! "
-        f"flvmux streamable=true ! "
-        f"rtmpsink location=\"{rtmp_url} live=1\" sync=false"
-    )
+
+    if fmt.upper() in ('MJPG', 'JPEG'):
+        pipeline_str = (
+            f"{src} ! "
+            f"image/jpeg,width={width},height={height},framerate={int(fps)}/1 ! "
+            f"jpegdec ! "
+            f"videoconvert ! "
+            f"x264enc tune=zerolatency bitrate={bitrate//1000} speed-preset=veryfast key-int-max={gop} ! "
+            f"h264parse config-interval=1 ! "
+            f"flvmux streamable=true ! "
+            f"rtmpsink location=\"{rtmp_url} live=1\" sync=false"
+        )
+    else:
+        pipeline_str = (
+            f"{src} ! "
+            f"video/x-raw,width={width},height={height},framerate={int(fps)}/1,format={fmt} ! "
+            f"videoconvert ! "
+            f"x264enc tune=zerolatency bitrate={bitrate//1000} speed-preset=veryfast key-int-max={gop} ! "
+            f"h264parse config-interval=1 ! "
+            f"flvmux streamable=true ! "
+            f"rtmpsink location=\"{rtmp_url} live=1\" sync=false"
+        )
     log.debug(f'Pipeline: {pipeline_str}')
     return pipeline_str
 

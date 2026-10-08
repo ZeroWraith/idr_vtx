@@ -15,9 +15,10 @@ capture:
   width: 1280
   height: 720
   framerate: 30
-  # Preferred pixel format from capture card (NV12, YUYV, UYVY, etc.)
+  # Preferred pixel format from capture card (MJPG, NV12, YUYV, UYVY, etc.)
   # Leave empty to auto-negotiate
   format: ""
+  preferred_formats: ["MJPG", "NV12", "YUYV", "UYVY"]
 
 # Encoder settings (Pi 5 v4l2h264enc)
 encoder:
