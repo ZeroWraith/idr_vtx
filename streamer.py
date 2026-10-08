@@ -77,29 +77,88 @@ def get_device_formats(device):
     # Simple parse: we just need to know if desired resolution exists.
     return out
 
+def find_supported_format(device, width, height, fps, preferred=('NV12','YUYV','UYVY')):
+    """Return a format string from preferred that device supports at given resolution/fps."""
+    try:
+        out = subprocess.check_output(['v4l2-ctl', '-d', device, '--list-formats-ext'], text=True)
+    except subprocess.CalledProcessError:
+        return None
+    lines = out.splitlines()
+    current_fmt = None
+    in_size = False
+    size_match = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith('[') and ']:' in stripped:
+            # format line, e.g. [0]: 'YUYV' (YUYV 4:2:2)
+            parts = stripped.split("'")
+            if len(parts) >= 2:
+                current_fmt = parts[1]
+            in_size = False
+            size_match = False
+        elif stripped.startswith('Size:') and current_fmt:
+            # Size: Discrete 1280x720
+            if f'{width}x{height}' in stripped:
+                size_match = True
+                in_size = True
+            else:
+                size_match = False
+                in_size = False
+        elif stripped.startswith('Interval:') and size_match and current_fmt:
+            # Interval: Discrete 0.033s (30.000 fps)
+            # compute fps from interval
+            try:
+                # find number in parentheses
+                import re
+                m = re.search(r'\(([\d.]+)\s*fps\)', stripped)
+                if m:
+                    interval_fps = float(m.group(1))
+                    if abs(interval_fps - fps) < 0.5:
+                        if current_fmt in preferred:
+                            return current_fmt
+            except Exception:
+                pass
+    return None
+
+
 def pick_capture_device(cfg):
-    """Select capture device per config or auto-detect first suitable."""
+    """Select capture device per config or auto-detect first suitable.
+    Returns (device_path, format_string) or (None, None)."""
     desired = cfg['capture'].get('device')
+    cap = cfg['capture']
+    width = cap['width']
+    height = cap['height']
+    fps = cap['framerate']
+    preferred = cap.get('preferred_formats', ['NV12','YUYV','UYVY'])
     if desired:
         if os.path.exists(desired):
-            log.info(f'Using configured device: {desired}')
-            return desired
+            fmt = find_supported_format(desired, width, height, fps, preferred)
+            if fmt:
+                log.info(f'Using configured device: {desired} with format {fmt}')
+                return desired, fmt
+            else:
+                log.error(f'Configured device {desired} does not support {width}x{height}@{fps}fps with preferred formats')
+                return None, None
         else:
             log.warning(f'Configured device {desired} not found, falling back to auto-detect')
     devices = list_video_devices()
     if not devices:
         log.error('No video capture devices found')
-        return None
+        return None, None
     for dev, name in devices:
         log.info(f'Found capture device: {dev} ({name})')
-        # Optionally verify format support here
-        return dev
-    return None
+        fmt = find_supported_format(dev, width, height, fps, preferred)
+        if fmt:
+            log.info(f'Selected device {dev} with format {fmt}')
+            return dev, fmt
+        else:
+            log.warning(f'Device {dev} does not support required mode')
+    return None, None
 
 # ----------------------------------------------------------------------
 # GStreamer pipeline construction
 # ----------------------------------------------------------------------
-def build_pipeline(cfg, device):
+def build_pipeline(cfg, device, fmt):
     cap = cfg['capture']
     enc = cfg['encoder']
     rtmp = cfg['rtmp']
@@ -107,7 +166,6 @@ def build_pipeline(cfg, device):
     width = cap['width']
     height = cap['height']
     fps = cap['framerate']
-    fmt = cap.get('format') or 'NV12'
 
     bitrate = enc['bitrate']
     profile_map = {'baseline': 1, 'main': 2, 'high': 4}
@@ -122,8 +180,8 @@ def build_pipeline(cfg, device):
     pipeline_str = (
         f"v4l2src device={device} io-mode={io_mode} ! "
         f"video/x-raw,width={width},height={height},framerate={fps}/1,format={fmt} ! "
-        f"v4l2h264enc extra-controls=\"controls,video_bitrate={bitrate},h264_profile={profile},h264_level={level}\" "
-        f"gop-size={gop} ! "
+        f"videoconvert ! "
+        f"x264enc tune=zerolatency bitrate={bitrate//1000} speed-preset=veryfast key-int-max={gop} ! "
         f"h264parse config-interval=1 ! "
         f"flvmux streamable=true ! "
         f"rtmpsink location=\"{rtmp_url} live=1\" sync=false"
@@ -150,14 +208,14 @@ class Streamer:
 
     def _setup_device(self):
         while self.running:
-            self.device = pick_capture_device(self.cfg)
+            self.device, self.fmt = pick_capture_device(self.cfg)
             if self.device:
                 break
             log.warning('No capture device found, retrying in 5s...')
             time.sleep(5)
 
     def _build_and_run_pipeline(self):
-        pipe_str = build_pipeline(self.cfg, self.device)
+        pipe_str = build_pipeline(self.cfg, self.device, self.fmt)
         self.pipeline = Gst.parse_launch(pipe_str)
         bus = self.pipeline.get_bus()
         bus.add_signal_watch()

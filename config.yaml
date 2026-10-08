@@ -11,7 +11,7 @@ rtmp:
 # Video capture device (USB capture card)
 capture:
   # Set to specific device like "/dev/video0" or leave empty to auto-detect
-  device: "/dev/video3"
+  device: ""
   width: 1280
   height: 720
   framerate: 30
