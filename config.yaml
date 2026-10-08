@@ -1,0 +1,34 @@
+# Raspberry Pi 5 RTMP Streamer Configuration
+# Edit values to match your setup
+
+# RTMP server (MediaMTX on receiver)
+rtmp:
+  host: "192.168.1.200"      # IP or hostname of receiver running MediaMTX
+  port: 1935
+  app: "live"
+  stream_key: "streamkey"     # Must match what you use in VLC
+
+# Video capture device (USB capture card)
+capture:
+  # Set to specific device like "/dev/video0" or leave empty to auto-detect
+  device: "/dev/video3"
+  width: 1280
+  height: 720
+  framerate: 30
+  # Preferred pixel format from capture card (NV12, YUYV, UYVY, etc.)
+  # Leave empty to auto-negotiate
+  format: ""
+
+# Encoder settings (Pi 5 v4l2h264enc)
+encoder:
+  bitrate: 4000000          # 4 Mbps for 720p30
+  profile: "baseline"       # baseline, main, high
+  level: "3.1"              # H.264 level string
+  gop_size: 30              # keyframe interval (seconds * framerate)
+  # Hardware encoding options
+  io_mode: "dmabuf-import"  # zero-copy on Pi 5
+
+# Streamer behavior
+streamer:
+  reconnect_delay: 5        # seconds between reconnection attempts
+  log_level: "INFO"         # DEBUG, INFO, WARNING, ERROR

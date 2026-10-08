@@ -1,0 +1,4 @@
+# Python dependencies (install via pip)
+pyyaml
+# GStreamer bindings (gi.repository) are provided by system package:
+#   sudo apt install python3-gst-1.0 python3-gi
